@@ -60,16 +60,16 @@ class Sentinel2IndexCalculator:
 
     def __init__(self, start_date, end_date, region, id_column='id', batch_size=50, max_workers=5, timeout=300):
         """
-        Inicializa o objeto Sentinel2IndexCalculator.
+        Initializes the Sentinel2IndexCalculator object.
 
         Args:
-            start_date (str): Data inicial da coleção de imagens no formato 'dd-mm-yyyy'.
-            end_date (str): Data final da coleção de imagens no formato 'dd-mm-yyyy'.
-            region (ee.Geometry): Região de interesse para filtrar a coleção de imagens.
-            id_column (str, optional): Nome da coluna a ser usada como ID. Padrão é 'id'.
-            batch_size (int, optional): Tamanho de cada lote para processamento da coleção de imagens. Padrão é 50.
-            max_workers (int, optional): Número máximo de workers para processamento paralelo. Padrão é 5.
-            timeout (int, optional): Tempo máximo em segundos para processar um batch. Padrão é 300.
+            start_date (str): Start date of the image collection in 'dd-mm-yyyy' format.
+            end_date (str): End date of the image collection in 'dd-mm-yyyy' format.
+            region (ee.Geometry): Region of interest to filter the image collection.
+            id_column (str, optional): Name of the column to be used as ID. Default is 'id'.
+            batch_size (int, optional): Size of each batch for processing the image collection. Default is 50.
+            max_workers (int, optional): Maximum number of workers for parallel processing. Default is 5.
+            timeout (int, optional): Maximum time in seconds to process a batch. Default is 300.
         """
         self.start_date = start_date
         self.end_date = end_date
@@ -233,16 +233,16 @@ class Sentinel2IndexCalculator:
     
     def compute_batch_indices(self, b):
         """
-        Computa os índices para um lote de imagens.
+        Computes indices for a batch of images.
 
         Args:
-            b (int): O número do lote.
+            b (int): The batch number.
 
         Returns:
-            pd.DataFrame: Os resultados como um DataFrame do pandas.
+            pd.DataFrame: The results as a pandas DataFrame.
             
         Raises:
-            Exception: Se ocorrer um erro durante o processamento do lote.
+            Exception: If an error occurs during batch processing.
         """
         try:
             start = b * self.batch_size
@@ -250,132 +250,132 @@ class Sentinel2IndexCalculator:
             batch = self.sentinel2.toList(self.batch_size, start)
             batch_image_collection = ee.ImageCollection(batch)
 
-            # Etapas de processamento para índices
+            # Processing steps for indices
             calculate_indices = [self.calculate_ndvi, self.calculate_evi, self.calculate_lai, 
                                 self.calculate_savi, self.calculate_pvi, self.calculate_wsi]
             index_names = ['ndvi', 'evi', 'lai', 'savi', 'pvi', 'wsi']
 
-            # Processa cada índice e achata as coleções
+            # Process each index and flatten collections
             mean_index_collections = [self.get_mean_index_collection(batch_image_collection, index_calc) 
                                     for index_calc in calculate_indices]
             mean_index_fcs = [self.flatten_feature_collections(index_collection) 
                             for index_collection in mean_index_collections]
 
-            # Constrói o dataframe a partir dos resultados
+            # Build dataframe from results
             df = self.get_results_as_dataframe(mean_index_fcs, index_names)
             
-            self.logger.info(f"Lote {b} processado com sucesso: {len(df)} registros")
+            self.logger.info(f"Batch {b} processed successfully: {len(df)} records")
             return df
         except Exception as e:
-            self.logger.error(f"Erro ao processar lote {b}: {str(e)}")
+            self.logger.error(f"Error processing batch {b}: {str(e)}")
             raise
 
     def _process_batch_with_retry(self, b, max_retries=3, retry_delay=5):
         """
-        Processa um lote com sistema de tentativas em caso de falha.
+        Processes a batch with retry mechanism in case of failure.
         
         Args:
-            b (int): Número do lote
-            max_retries (int): Número máximo de tentativas
-            retry_delay (int): Tempo de espera entre tentativas em segundos
+            b (int): Batch number
+            max_retries (int): Maximum number of retry attempts
+            retry_delay (int): Wait time between attempts in seconds
             
         Returns:
-            pd.DataFrame or None: DataFrame com resultados ou None se falhar
+            pd.DataFrame or None: DataFrame with results or None if failed
         """
         for attempt in range(max_retries):
             try:
                 return self.compute_batch_indices(b)
             except Exception as e:
                 if attempt < max_retries - 1:
-                    self.logger.warning(f"Tentativa {attempt+1} falhou para lote {b}. Tentando novamente em {retry_delay}s")
+                    self.logger.warning(f"Attempt {attempt+1} failed for batch {b}. Retrying in {retry_delay}s")
                     time.sleep(retry_delay)
                 else:
-                    self.logger.error(f"Falha ao processar lote {b} após {max_retries} tentativas: {str(e)}")
-                    return pd.DataFrame()  # Retorna DataFrame vazio em caso de falha final
+                    self.logger.error(f"Failed to process batch {b} after {max_retries} attempts: {str(e)}")
+                    return pd.DataFrame()  # Return empty DataFrame in case of final failure
 
     def aggregate_all_batches(self, buffer_size=5):
         """
-        Agrega todos os lotes de imagens e retorna os resultados como DataFrame.
+        Aggregates all batches of images and returns the results as DataFrame.
         
         Args:
-            buffer_size (int): Tamanho do buffer para armazenar resultados antes de concatenar
-                               Use valores menores para conjuntos grandes de dados
+            buffer_size (int): Buffer size to store results before concatenation
+                               Use smaller values for larger datasets
         
         Returns:
-            pd.DataFrame: Os resultados agregados como DataFrame do pandas.
+            pd.DataFrame: The aggregated results as a pandas DataFrame.
         """
         collection_size = self.sentinel2.size().getInfo()
         batches = collection_size // self.batch_size + (collection_size % self.batch_size > 0)
         
-        self.logger.info(f"Iniciando processamento de {batches} lotes (total de {collection_size} imagens)")
+        self.logger.info(f"Starting processing of {batches} batches (total of {collection_size} images)")
 
         all_dataframes = []
         buffer = []
         
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submissão de todas as tarefas de processamento em lote como tarefas futuras
+            # Submit all batch processing tasks as future tasks
             futures = {executor.submit(self._process_batch_with_retry, b): b for b in range(batches)}
             
-            # Coleta de resultados com barra de progresso
-            with tqdm(total=batches, desc="Processando lotes") as progress:
+            # Collect results with progress bar
+            with tqdm(total=batches, desc="Processing batches") as progress:
                 for future in as_completed(futures):
                     batch_num = futures[future]
                     try:
                         result_df = future.result(timeout=self.timeout)
                         buffer.append(result_df)
                         
-                        # Concatena e limpa o buffer quando chegar ao tamanho máximo
+                        # Concatenate and clear buffer when reaching maximum size
                         if len(buffer) >= buffer_size:
                             if buffer:
                                 all_dataframes.append(pd.concat(buffer, ignore_index=True))
                             buffer = []
                             
                     except TimeoutError:
-                        self.logger.error(f"Timeout ao processar lote {batch_num}")
+                        self.logger.error(f"Timeout processing batch {batch_num}")
                     except Exception as e:
-                        self.logger.error(f"Erro em lote {batch_num}: {str(e)}")
+                        self.logger.error(f"Error in batch {batch_num}: {str(e)}")
                     finally:
                         progress.update(1)
         
-        # Adiciona quaisquer resultados restantes no buffer
+        # Add any remaining results in buffer
         if buffer:
             all_dataframes.append(pd.concat(buffer, ignore_index=True))
             
         if not all_dataframes:
-            self.logger.warning("Nenhum dado processado com sucesso!")
+            self.logger.warning("No data processed successfully!")
             return pd.DataFrame()
             
         final_df = pd.concat(all_dataframes, ignore_index=True)
-        self.logger.info(f"Processamento concluído. Obtidos {len(final_df)} registros no total.")
+        self.logger.info(f"Processing completed. Obtained {len(final_df)} records in total.")
         return final_df
 
     def flatten_feature_collections(self, feature_collections):
         """
-        Achata as coleções de feições.
+        Flattens the feature collections.
 
         Args:
-            feature_collections (ee.FeatureCollection): As coleções de feições.
+            feature_collections (ee.FeatureCollection): The feature collections.
 
         Returns:
-            ee.FeatureCollection: As coleções de feições achatadas.
+            ee.FeatureCollection: The flattened feature collections.
         """
         return feature_collections.map(lambda feature: feature.set('date', feature.get('date'))).flatten()
 
     def calculate_single_index(self, index_name, buffer_size=5):
         """
-        Calcula um único índice especificado para todas as imagens.
+        Calculates a single specified index for all images.
         
         Args:
-            index_name (str): Nome do índice a ser calculado ('ndvi', 'evi', 'lai', 'savi', 'pvi', 'wsi')
-            buffer_size (int): Tamanho do buffer para armazenar resultados antes de concatenar
+            index_name (str): Name of the index to calculate ('ndvi', 'evi', 'lai', 'savi', 'pvi', 'wsi')
+            buffer_size (int): Buffer size to store results before concatenation
         
         Returns:
-            pd.DataFrame: DataFrame contendo apenas os dados do índice solicitado
+            pd.DataFrame: DataFrame containing only the data of the requested index
             
         Raises:
-            ValueError: Se o nome do índice não for reconhecido
+            ValueError: If the index name is not recognized
         """
-        # Mapeamento dos nomes de índice para suas funções de cálculo
+        # Mapping index names to their calculation functions
         index_functions = {
             'ndvi': self.calculate_ndvi,
             'evi': self.calculate_evi,
@@ -386,15 +386,15 @@ class Sentinel2IndexCalculator:
         }
         
         if index_name.lower() not in index_functions:
-            raise ValueError(f"Índice '{index_name}' não reconhecido. Índices disponíveis: {', '.join(index_functions.keys())}")
+            raise ValueError(f"Index '{index_name}' not recognized. Available indices: {', '.join(index_functions.keys())}")
         
         calculate_index = index_functions[index_name.lower()]
-        self.logger.info(f"Iniciando cálculo do índice {index_name.upper()}")
+        self.logger.info(f"Starting calculation of index {index_name.upper()}")
         
         collection_size = self.sentinel2.size().getInfo()
         batches = collection_size // self.batch_size + (collection_size % self.batch_size > 0)
         
-        self.logger.info(f"Processando {batches} lotes (total de {collection_size} imagens)")
+        self.logger.info(f"Processing {batches} batches (total of {collection_size} images)")
         
         all_dataframes = []
         buffer = []
@@ -404,7 +404,7 @@ class Sentinel2IndexCalculator:
             for b in range(batches):
                 futures[executor.submit(self._process_single_index_batch, b, calculate_index, index_name)] = b
                 
-            with tqdm(total=batches, desc=f"Processando {index_name.upper()}") as progress:
+            with tqdm(total=batches, desc=f"Processing {index_name.upper()}") as progress:
                 for future in as_completed(futures):
                     batch_num = futures[future]
                     try:
@@ -412,56 +412,56 @@ class Sentinel2IndexCalculator:
                         if not result_df.empty:
                             buffer.append(result_df)
                             
-                            # Concatena e limpa o buffer quando chegar ao tamanho máximo
+                            # Concatenate and clear buffer when reaching maximum size
                             if len(buffer) >= buffer_size:
                                 all_dataframes.append(pd.concat(buffer, ignore_index=True))
                                 buffer = []
                                 
                     except TimeoutError:
-                        self.logger.error(f"Timeout ao processar lote {batch_num}")
+                        self.logger.error(f"Timeout processing batch {batch_num}")
                     except Exception as e:
-                        self.logger.error(f"Erro em lote {batch_num}: {str(e)}")
+                        self.logger.error(f"Error in batch {batch_num}: {str(e)}")
                     finally:
                         progress.update(1)
         
-        # Adiciona quaisquer resultados restantes no buffer
+        # Add any remaining results in buffer
         if buffer:
             all_dataframes.append(pd.concat(buffer, ignore_index=True))
             
         if not all_dataframes:
-            self.logger.warning("Nenhum dado processado com sucesso!")
+            self.logger.warning("No data processed successfully!")
             return pd.DataFrame()
             
         final_df = pd.concat(all_dataframes, ignore_index=True)
-        self.logger.info(f"Processamento do índice {index_name.upper()} concluído. Obtidos {len(final_df)} registros.")
+        self.logger.info(f"Processing of index {index_name.upper()} completed. Obtained {len(final_df)} records.")
         return final_df
     
     def _process_single_index_batch(self, b, calculate_index, index_name):
         """
-        Processa um lote para um único índice especificado.
+        Processes a batch for a single specified index.
         
         Args:
-            b (int): O número do lote
-            calculate_index (function): Função para calcular o índice
-            index_name (str): Nome do índice sendo calculado
+            b (int): The batch number
+            calculate_index (function): Function to calculate the index
+            index_name (str): Name of the index being calculated
             
         Returns:
-            pd.DataFrame: DataFrame contendo os resultados para o lote
+            pd.DataFrame: DataFrame containing the results for the batch
         """
         try:
             start = b * self.batch_size
             batch = self.sentinel2.toList(self.batch_size, start)
             batch_image_collection = ee.ImageCollection(batch)
             
-            # Processa apenas o índice solicitado
+            # Process only the requested index
             mean_index_collection = self.get_mean_index_collection(batch_image_collection, calculate_index)
             mean_index_fc = self.flatten_feature_collections(mean_index_collection)
             
-            # Constrói o dataframe a partir dos resultados
+            # Build dataframe from results
             df = self.get_results_as_dataframe([mean_index_fc], [index_name])
             
-            self.logger.info(f"Lote {b} processado com sucesso: {len(df)} registros para {index_name}")
+            self.logger.info(f"Batch {b} processed successfully: {len(df)} records for {index_name}")
             return df
         except Exception as e:
-            self.logger.error(f"Erro ao processar {index_name} para lote {b}: {str(e)}")
-            return pd.DataFrame()  # Retorna DataFrame vazio em caso de falha
+            self.logger.error(f"Error processing {index_name} for batch {b}: {str(e)}")
+            return pd.DataFrame()  # Return empty DataFrame in case of failure
