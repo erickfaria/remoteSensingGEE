@@ -360,3 +360,108 @@ class Sentinel2IndexCalculator:
             ee.FeatureCollection: As coleções de feições achatadas.
         """
         return feature_collections.map(lambda feature: feature.set('date', feature.get('date'))).flatten()
+
+    def calculate_single_index(self, index_name, buffer_size=5):
+        """
+        Calcula um único índice especificado para todas as imagens.
+        
+        Args:
+            index_name (str): Nome do índice a ser calculado ('ndvi', 'evi', 'lai', 'savi', 'pvi', 'wsi')
+            buffer_size (int): Tamanho do buffer para armazenar resultados antes de concatenar
+        
+        Returns:
+            pd.DataFrame: DataFrame contendo apenas os dados do índice solicitado
+            
+        Raises:
+            ValueError: Se o nome do índice não for reconhecido
+        """
+        # Mapeamento dos nomes de índice para suas funções de cálculo
+        index_functions = {
+            'ndvi': self.calculate_ndvi,
+            'evi': self.calculate_evi,
+            'lai': self.calculate_lai,
+            'savi': self.calculate_savi,
+            'pvi': self.calculate_pvi,
+            'wsi': self.calculate_wsi
+        }
+        
+        if index_name.lower() not in index_functions:
+            raise ValueError(f"Índice '{index_name}' não reconhecido. Índices disponíveis: {', '.join(index_functions.keys())}")
+        
+        calculate_index = index_functions[index_name.lower()]
+        self.logger.info(f"Iniciando cálculo do índice {index_name.upper()}")
+        
+        collection_size = self.sentinel2.size().getInfo()
+        batches = collection_size // self.batch_size + (collection_size % self.batch_size > 0)
+        
+        self.logger.info(f"Processando {batches} lotes (total de {collection_size} imagens)")
+        
+        all_dataframes = []
+        buffer = []
+        
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {}
+            for b in range(batches):
+                futures[executor.submit(self._process_single_index_batch, b, calculate_index, index_name)] = b
+                
+            with tqdm(total=batches, desc=f"Processando {index_name.upper()}") as progress:
+                for future in as_completed(futures):
+                    batch_num = futures[future]
+                    try:
+                        result_df = future.result(timeout=self.timeout)
+                        if not result_df.empty:
+                            buffer.append(result_df)
+                            
+                            # Concatena e limpa o buffer quando chegar ao tamanho máximo
+                            if len(buffer) >= buffer_size:
+                                all_dataframes.append(pd.concat(buffer, ignore_index=True))
+                                buffer = []
+                                
+                    except TimeoutError:
+                        self.logger.error(f"Timeout ao processar lote {batch_num}")
+                    except Exception as e:
+                        self.logger.error(f"Erro em lote {batch_num}: {str(e)}")
+                    finally:
+                        progress.update(1)
+        
+        # Adiciona quaisquer resultados restantes no buffer
+        if buffer:
+            all_dataframes.append(pd.concat(buffer, ignore_index=True))
+            
+        if not all_dataframes:
+            self.logger.warning("Nenhum dado processado com sucesso!")
+            return pd.DataFrame()
+            
+        final_df = pd.concat(all_dataframes, ignore_index=True)
+        self.logger.info(f"Processamento do índice {index_name.upper()} concluído. Obtidos {len(final_df)} registros.")
+        return final_df
+    
+    def _process_single_index_batch(self, b, calculate_index, index_name):
+        """
+        Processa um lote para um único índice especificado.
+        
+        Args:
+            b (int): O número do lote
+            calculate_index (function): Função para calcular o índice
+            index_name (str): Nome do índice sendo calculado
+            
+        Returns:
+            pd.DataFrame: DataFrame contendo os resultados para o lote
+        """
+        try:
+            start = b * self.batch_size
+            batch = self.sentinel2.toList(self.batch_size, start)
+            batch_image_collection = ee.ImageCollection(batch)
+            
+            # Processa apenas o índice solicitado
+            mean_index_collection = self.get_mean_index_collection(batch_image_collection, calculate_index)
+            mean_index_fc = self.flatten_feature_collections(mean_index_collection)
+            
+            # Constrói o dataframe a partir dos resultados
+            df = self.get_results_as_dataframe([mean_index_fc], [index_name])
+            
+            self.logger.info(f"Lote {b} processado com sucesso: {len(df)} registros para {index_name}")
+            return df
+        except Exception as e:
+            self.logger.error(f"Erro ao processar {index_name} para lote {b}: {str(e)}")
+            return pd.DataFrame()  # Retorna DataFrame vazio em caso de falha
